@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import os
+import sys
+import json
+import csv
+import httplib2
+import datetime
+from optparse import OptionParser
+
+
+ARGS = [
+    {
+        'val': '--key',
+        'dest': 'key',
+        'action': 'store',
+        'help': 'API Key'
+    }, {
+        'val': '--measure',
+        'dest': 'measure',
+        'action': 'store',
+        'default': None,
+        'help': 'URI eg. http://metrics.operas-eu.org/unglueit/downloads/v1'
+    }, {
+        'val': '--publisher',
+        'dest': 'publisher',
+        'action': 'store',
+        'default': None,
+        'help': 'Publisher ID in Unlgueit API eg. 1'
+      }, {
+          'val': '--username',
+          'dest': 'username',
+          'action': 'store',
+          'default': None,
+          'help': 'Unglue.it username eg. obp'
+    }, {
+        'val': '--add-headers',
+        'dest': 'add_headers',
+        'action': 'store_true',
+        'default': [],
+        'help': 'Whether to print report headers'
+    }
+]
+ROOT_URL = "https://unglue.it/"
+URI_SCHEME = os.environ['URI_SCHEME']
+
+
+def get_path(url):
+    h = httplib2.Http()
+    res, content = h.request(url, 'GET')
+    try:
+        assert res.status == 200
+    except AssertionError:
+        m = "Could not retrieve report (%d): %s"
+        sys.stderr.write(m % (res.status, url))
+    return json.loads(content.decode('utf-8'))
+
+
+def get_api_url(path, key, user):
+    return "%s/%s?format=json&api_key=%s&username=%s" % \
+            (ROOT_URL, path, key, user)
+
+
+def get_options(args):
+    parser = OptionParser()
+    for arg in args:
+        parser.add_option(arg['val'], dest=arg['dest'],
+                          action=arg['action'], help=arg['help'])
+    options, rest = parser.parse_args()
+
+    assert rest == []
+    assert options.measure and options.publisher and options.key
+    return options
+
+
+def run(key, measure, publisher, user, add_headers):
+    publisher_path = "/api/v1/publisher/%s" % (publisher)
+    publisher = get_path(get_api_url(publisher_path, key, user))
+    downloads = {}
+    for ebook_path in publisher["ebooks"]:
+        ebook = get_path(get_api_url(ebook_path, key, user))
+        edition_path = ebook["edition"]
+        download_count = ebook["download_count"]
+        edition = get_path(get_api_url(edition_path, key, user))
+        for identifier_path in edition["identifiers"]:
+            identifier = get_path(get_api_url(identifier_path, key, user))
+            if identifier["type"] == "doi":
+                doi = "%s:%s" % (URI_SCHEME, identifier["value"].lower())
+                if doi not in downloads:
+                    downloads[doi] = download_count
+                else:
+                    downloads[doi] += download_count
+
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d 00:00:00')
+    w = csv.writer(sys.stdout)
+    if add_headers:
+        w.writerow(('measure_id', 'timestamp', 'work_uri',
+                    'country_uri', 'event_uri', 'value'))
+    for doi, value in downloads.items():
+        row = [measure, timestamp, doi, "", "", value]
+        w.writerow(row)
+
+
+if __name__ == '__main__':
+    options = get_options(ARGS)
+    run(options.key, options.measure, options.publisher,
+        options.username, options.add_headers)
